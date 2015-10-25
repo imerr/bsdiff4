@@ -443,10 +443,10 @@ static PyObject* patch(PyObject* self, PyObject* args)
             return NULL;
         }
         memcpy(newData + newpos, diffPtr, x);
-        diffPtr += x;
         for (j = 0; j < x; j++)
             if ((oldpos + j >= 0) && (oldpos + j < origDataLength))
                 newData[newpos + j] += origData[oldpos + j];
+        diffPtr += x;
         newpos += x;
         oldpos += x;
         memcpy(newData + newpos, extraPtr, y);
@@ -469,6 +469,89 @@ static PyObject* patch(PyObject* self, PyObject* args)
     return results;
 }
 
+static PyObject* patch_stream(PyObject* self, PyObject* args)
+{
+	PyObject* file, *fileOrig;
+    char *diffBlock, *extraBlock;
+    int newDataLength, diffBlockLength, extraBlockLength;
+    PyObject *controlTuples;
+
+    if (!PyArg_ParseTuple(args, "OOiO!s#s#", &file, &fileOrig,
+                          &newDataLength, &PyList_Type, &controlTuples,
+                          &diffBlock, &diffBlockLength, &extraBlock,
+                          &extraBlockLength))
+        return NULL;
+	
+    off_t oldpos = 0;
+    off_t newpos = 0;
+    char* diffPtr = diffBlock;
+    char* extraPtr = extraBlock;
+    int numTuples = PyList_GET_SIZE(controlTuples);
+	int i;
+	PyObject* ret;
+#define BSPY_CHECK(what) do { \
+	ret = what;\
+	if (!ret) {\
+		PyErr_SetString(PyExc_ValueError, #what " failed");\
+		return NULL;\
+	}\
+	Py_DECREF(ret);\
+}\
+while(0)
+	BSPY_CHECK(PyObject_CallMethod(file, "truncate", "i", newDataLength-1));
+
+    for (i = 0; i < numTuples; i++) {
+        PyObject* tuple = PyList_GET_ITEM(controlTuples, i);
+        if (!PyTuple_Check(tuple)) {
+            PyErr_SetString(PyExc_TypeError, "expecting tuple");
+            return NULL;
+        }
+        if (PyTuple_GET_SIZE(tuple) != 3) {
+            PyErr_SetString(PyExc_TypeError, "expecting tuple of size 3");
+            return NULL;
+        }
+        off_t x = PyLong_AsLong(PyTuple_GET_ITEM(tuple, 0));
+        off_t y = PyLong_AsLong(PyTuple_GET_ITEM(tuple, 1));
+        off_t z = PyLong_AsLong(PyTuple_GET_ITEM(tuple, 2));
+        if (newpos + x > newDataLength ||
+                diffPtr + x > diffBlock + diffBlockLength ||
+                extraPtr + y > extraBlock + extraBlockLength) {
+            PyErr_SetString(PyExc_ValueError, "corrupt patch (overflow)");
+            return NULL;
+        }
+		if (x != 0) {
+			BSPY_CHECK(PyObject_CallMethod(fileOrig, "seek", "i", oldpos));
+			PyObject* origDataObj = PyObject_CallMethod(fileOrig, "read", "i", x);
+			char* origData = PyString_AsString(origDataObj);
+			int j;
+			for (j = 0; j < x; j++)
+				origData[j] += diffPtr[j];
+			BSPY_CHECK(PyObject_CallMethod(file, "seek", "i", newpos));
+			BSPY_CHECK(PyObject_CallMethod(file, "write", "s#", origData, x));
+			Py_DECREF(origDataObj);
+			diffPtr += x;
+			newpos += x;
+			oldpos += x;
+        }
+		if (y != 0) {
+			BSPY_CHECK(PyObject_CallMethod(file, "seek", "i", newpos));
+			BSPY_CHECK(PyObject_CallMethod(file, "write", "s#", extraPtr, y));
+			extraPtr += y;
+			newpos += y;
+		}
+        oldpos += z;
+    }
+
+    /* confirm that a valid patch was applied */
+    if (newpos != newDataLength ||
+            diffPtr != diffBlock + diffBlockLength ||
+            extraPtr != extraBlock + extraBlockLength) {
+        PyErr_SetString(PyExc_ValueError, "corrupt patch (underflow)");
+        return NULL;
+    }
+
+    Py_RETURN_TRUE;
+}
 
 /* encode an integer value as a string of 8 bytes */
 static PyObject *encode_int64(PyObject *self, PyObject *value)
@@ -525,6 +608,7 @@ static PyObject *decode_int64(PyObject *self, PyObject *string)
 static PyMethodDef module_functions[] = {
     {"diff", diff, METH_VARARGS},
     {"patch", patch, METH_VARARGS},
+    {"patch_stream", patch_stream, METH_VARARGS},
     {"encode_int64", encode_int64, METH_O},
     {"decode_int64", decode_int64, METH_O},
     {NULL, NULL, 0, NULL}  /* Sentinel */

@@ -1,5 +1,7 @@
 import bz2
 import sys
+import tempfile
+import shutil
 
 is_py3k = bool(sys.version_info[0] == 3)
 
@@ -102,14 +104,10 @@ def file_patch_inplace(path, patch_path):
 
     Apply the BSDIFF4-format file patch_path to the file 'path' in place.
     """
-    fi = open(patch_path, 'rb')
-    f = open(path, 'r+b')
-    data = f.read()
-    f.seek(0)
-    f.write(core.patch(data, *read_patch(fi)))
-    f.close()
-    fi.close()
 
+    with open(patch_path, 'rb') as fi, open(path, 'r+b') as f, tempfile.NamedTemporaryFile() as forig:
+        shutil.copyfileobj(f, forig)
+        core.patch_stream(f, forig, *read_patch(fi))
 
 def file_patch(src_path, dst_path, patch_path):
     """file_patch(src_path, dst_path, patch_path)
